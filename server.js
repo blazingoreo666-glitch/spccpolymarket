@@ -1,10 +1,10 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
+const PgSession = require('connect-pg-simple')(session);
 const passport = require('passport');
 const path = require('path');
-const db = require('./database');
+const { pool, initializeDatabase } = require('./database');
 const initializePassport = require('./passportConfig');
 
 const authRoutes = require('./routes/auth');
@@ -14,7 +14,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Initialize Passport
-initializePassport(passport);
+initializePassport(passport, pool);
 
 // Set up EJS
 app.set('view engine', 'ejs');
@@ -25,9 +25,12 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Session storage in SQLite
+// Session storage in PostgreSQL
 app.use(session({
-  store: new SQLiteStore({ db: 'sessions.db', dir: __dirname }),
+  store: new PgSession({
+    pool: pool,                // Connection pool
+    tableName: 'session'       // Will be created automatically
+  }),
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
@@ -49,12 +52,19 @@ app.use('/', authRoutes);
 app.use('/polls', pollRoutes);
 
 // Home page – list all polls
-app.get('/', (req, res) => {
-  const polls = db.prepare('SELECT * FROM polls ORDER BY created_at DESC').all();
-  res.render('index', { polls });
+app.get('/', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM polls ORDER BY created_at DESC');
+    res.render('index', { polls: result.rows });
+  } catch (err) {
+    console.error(err);
+    res.render('index', { polls: [] });
+  }
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// Start server after DB initialisation
+initializeDatabase().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
 });

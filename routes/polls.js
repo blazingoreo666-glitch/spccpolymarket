@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../database');
+const { pool } = require('../database');
 
 // Middleware to check if user is authenticated
 function checkAuthenticated(req, res, next) {
@@ -13,102 +13,154 @@ router.get('/create', checkAuthenticated, (req, res) => {
   res.render('create', { message: '' });
 });
 
-// POST create poll (form fields: question, options[])
-router.post('/create', checkAuthenticated, (req, res) => {
-  const { question } = req.body;
-  let options = req.body.options;   // array of strings
+// POST create poll
+router.post('/create', checkAuthenticated, async (req, res) => {
+  try {
+    const { question } = req.body;
+    let options = req.body.options; // array of strings
 
-  if (!question || !options || options.length < 2) {
-    return res.render('create', { message: 'Question and at least 2 options required' });
+    if (!question || !options || options.length < 2) {
+      return res.render('create', { message: 'Question and at least 2 options required' });
+    }
+
+    options = options.filter(opt => opt.trim() !== '');
+    if (options.length < 2) {
+      return res.render('create', { message: 'At least 2 non-empty options required' });
+    }
+
+    // Insert poll
+    const pollResult = await pool.query(
+      'INSERT INTO polls (question, creator_id) VALUES ($1, $2) RETURNING id',
+      [question, req.user.id]
+    );
+    const pollId = pollResult.rows[0].id;
+
+    // Insert options
+    for (const text of options) {
+      await pool.query('INSERT INTO options (poll_id, text) VALUES ($1, $2)', [pollId, text]);
+    }
+
+    res.redirect(`/polls/${pollId}`);
+  } catch (err) {
+    console.error(err);
+    res.render('create', { message: 'Error creating poll' });
   }
-
-  // Filter empty options
-  options = options.filter(opt => opt.trim() !== '');
-  if (options.length < 2) {
-    return res.render('create', { message: 'At least 2 non-empty options required' });
-  }
-
-  // Insert poll
-  const insertPoll = db.prepare('INSERT INTO polls (question, creator_id) VALUES (?, ?)');
-  const pollInfo = insertPoll.run(question, req.user.id);
-  const pollId = pollInfo.lastInsertRowid;
-
-  // Insert options
-  const insertOption = db.prepare('INSERT INTO options (poll_id, text) VALUES (?, ?)');
-  options.forEach(text => insertOption.run(pollId, text));
-
-  res.redirect(`/polls/${pollId}`);
 });
 
-// GET poll page (vote form + live results)
-router.get('/:id', (req, res) => {
-  const poll = db.prepare('SELECT * FROM polls WHERE id = ?').get(req.params.id);
-  if (!poll) return res.status(404).send('Poll not found');
+// GET poll page
+router.get('/:id', async (req, res) => {
+  try {
+    const pollResult = await pool.query('SELECT * FROM polls WHERE id = $1', [req.params.id]);
+    if (pollResult.rows.length === 0) return res.status(404).send('Poll not found');
 
-  const options = db.prepare('SELECT * FROM options WHERE poll_id = ?').all(poll.id);
+    const poll = pollResult.rows[0];
+    const optionsResult = await pool.query('SELECT * FROM options WHERE poll_id = $1', [poll.id]);
 
-  // Check if current user already voted
-  let hasVoted = false;
-  if (req.isAuthenticated()) {
-    const vote = db.prepare('SELECT * FROM votes WHERE user_id = ? AND poll_id = ?').get(req.user.id, poll.id);
-    hasVoted = !!vote;
+    let hasVoted = false;
+    if (req.isAuthenticated()) {
+      const voteResult = await pool.query(
+        'SELECT * FROM votes WHERE user_id = $1 AND poll_id = $2',
+        [req.user.id, poll.id]
+      );
+      hasVoted = voteResult.rows.length > 0;
+    }
+
+    // Initial vote counts
+    const initialCounts = [];
+    for (const opt of optionsResult.rows) {
+      const countResult = await pool.query('SELECT COUNT(*) as count FROM votes WHERE option_id = $1', [opt.id]);
+      initialCounts.push({
+        id: opt.id,
+        text: opt.text,
+        count: parseInt(countResult.rows[0].count)
+      });
+    }
+
+    res.render('poll', {
+      poll,
+      options: initialCounts,
+      user: req.user,
+      hasVoted
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error loading poll');
   }
-
-  // Initial vote counts (will be updated live by AJAX)
-  const initialCounts = options.map(opt => {
-    const count = db.prepare('SELECT COUNT(*) as count FROM votes WHERE option_id = ?').get(opt.id).count;
-    return { id: opt.id, text: opt.text, count };
-  });
-
-  res.render('poll', {
-    poll,
-    options: initialCounts,
-    user: req.user,
-    hasVoted
-  });
 });
 
 // POST vote
-router.post('/:id/vote', checkAuthenticated, (req, res) => {
+router.post('/:id/vote', checkAuthenticated, async (req, res) => {
   const pollId = req.params.id;
   const { optionId } = req.body;
 
-  // Prevent double voting
-  const existing = db.prepare('SELECT * FROM votes WHERE user_id = ? AND poll_id = ?').get(req.user.id, pollId);
-  if (existing) {
-    return res.status(400).json({ error: 'You have already voted' });
-  }
+  try {
+    // Prevent double voting
+    const existing = await pool.query(
+      'SELECT * FROM votes WHERE user_id = $1 AND poll_id = $2',
+      [req.user.id, pollId]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'You have already voted' });
+    }
 
-  // Check option belongs to poll
-  const option = db.prepare('SELECT * FROM options WHERE id = ? AND poll_id = ?').get(optionId, pollId);
-  if (!option) {
-    return res.status(400).json({ error: 'Invalid option' });
-  }
+    // Check option belongs to poll
+    const option = await pool.query(
+      'SELECT * FROM options WHERE id = $1 AND poll_id = $2',
+      [optionId, pollId]
+    );
+    if (option.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid option' });
+    }
 
-  db.prepare('INSERT INTO votes (user_id, option_id, poll_id) VALUES (?, ?, ?)').run(req.user.id, optionId, pollId);
-  res.json({ success: true });
+    await pool.query(
+      'INSERT INTO votes (user_id, option_id, poll_id) VALUES ($1, $2, $3)',
+      [req.user.id, optionId, pollId]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Vote failed' });
+  }
 });
 
-// GET live results (called by AJAX every few seconds)
-router.get('/:id/results', (req, res) => {
-  const pollId = req.params.id;
-  const poll = db.prepare('SELECT * FROM polls WHERE id = ?').get(pollId);
-  if (!poll) return res.status(404).json({ error: 'Poll not found' });
+// GET live results
+router.get('/:id/results', async (req, res) => {
+  try {
+    const pollId = req.params.id;
 
-  const options = db.prepare('SELECT * FROM options WHERE poll_id = ?').all(pollId);
-  const results = options.map(opt => {
-    const count = db.prepare('SELECT COUNT(*) as count FROM votes WHERE option_id = ?').get(opt.id).count;
-    return { id: opt.id, text: opt.text, count };
-  });
+    const pollResult = await pool.query('SELECT * FROM polls WHERE id = $1', [pollId]);
+    if (pollResult.rows.length === 0) return res.status(404).json({ error: 'Poll not found' });
 
-  // Also send whether current user has voted
-  let userHasVoted = false;
-  if (req.isAuthenticated()) {
-    const vote = db.prepare('SELECT * FROM votes WHERE user_id = ? AND poll_id = ?').get(req.user.id, pollId);
-    userHasVoted = !!vote;
+    const optionsResult = await pool.query('SELECT * FROM options WHERE poll_id = $1', [pollId]);
+
+    const results = [];
+    for (const opt of optionsResult.rows) {
+      const countResult = await pool.query('SELECT COUNT(*) as count FROM votes WHERE option_id = $1', [opt.id]);
+      results.push({
+        id: opt.id,
+        text: opt.text,
+        count: parseInt(countResult.rows[0].count)
+      });
+    }
+
+    let userHasVoted = false;
+    if (req.isAuthenticated()) {
+      const voteResult = await pool.query(
+        'SELECT * FROM votes WHERE user_id = $1 AND poll_id = $2',
+        [req.user.id, pollId]
+      );
+      userHasVoted = voteResult.rows.length > 0;
+    }
+
+    res.json({
+      question: pollResult.rows[0].question,
+      results,
+      userHasVoted
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to get results' });
   }
-
-  res.json({ question: poll.question, results, userHasVoted });
 });
 
 module.exports = router;
