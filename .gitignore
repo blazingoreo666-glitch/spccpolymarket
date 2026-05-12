@@ -1,0 +1,4 @@
+node_modules/
+.env
+polling.db
+sessions.db

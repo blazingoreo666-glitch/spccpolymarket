@@ -1,0 +1,23 @@
+<%- include('partials/header') %>
+<h1>Create a Poll</h1>
+<% if (message) { %>
+  <p style="color:red;"><%= message %></p>
+<% } %>
+<form action="/polls/create" method="POST">
+  <label>Question: <input type="text" name="question" required></label>
+  <div id="options">
+    <div>Option: <input type="text" name="options" required></div>
+    <div>Option: <input type="text" name="options" required></div>
+  </div>
+  <button type="button" onclick="addOption()">Add another option</button>
+  <button type="submit">Create Poll</button>
+</form>
+<script>
+  function addOption() {
+    const container = document.getElementById('options');
+    const div = document.createElement('div');
+    div.innerHTML = 'Option: <input type="text" name="options" required>';
+    container.appendChild(div);
+  }
+</script>
+</main></body></html>

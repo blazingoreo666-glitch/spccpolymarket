@@ -1,0 +1,14 @@
+<%- include('partials/header') %>
+<h1>All Polls</h1>
+<% if (polls.length === 0) { %>
+  <p>No polls yet. <a href="/polls/create">Create one!</a></p>
+<% } else { %>
+  <ul>
+    <% polls.forEach(poll => { %>
+      <li><a href="/polls/<%= poll.id %>"><%= poll.question %></a></li>
+    <% }) %>
+  </ul>
+<% } %>
+</main>
+</body>
+</html>

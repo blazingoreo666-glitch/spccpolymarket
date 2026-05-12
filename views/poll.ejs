@@ -1,0 +1,83 @@
+<%- include('partials/header') %>
+<h1><%= poll.question %></h1>
+
+<% if (!user) { %>
+  <p><a href="/login">Log in</a> to vote.</p>
+<% } else if (hasVoted) { %>
+  <p>You have already voted. Your vote counts!</p>
+<% } else { %>
+  <form id="vote-form">
+    <input type="hidden" name="pollId" value="<%= poll.id %>">
+    <% options.forEach(option => { %>
+      <label>
+        <input type="radio" name="optionId" value="<%= option.id %>" required>
+        <%= option.text %>
+      </label><br>
+    <% }) %>
+    <button type="submit">Vote</button>
+  </form>
+<% } %>
+
+<h2>Current Results</h2>
+<div id="results-container">
+  <% options.forEach(option => { %>
+    <div>
+      <span><%= option.text %>: <span class="count" id="count-<%= option.id %>">0</span></span>
+      <div style="background:#eee; height:20px; width:100%; margin:4px 0;">
+        <div id="bar-<%= option.id %>" style="background:#007bff; height:100%; width:0%;"></div>
+      </div>
+    </div>
+  <% }) %>
+</div>
+
+<script>
+  const pollId = "<%= poll.id %>";
+  const resultsContainer = document.getElementById('results-container');
+
+  // Vote form submission (AJAX)
+  const voteForm = document.getElementById('vote-form');
+  if (voteForm) {
+    voteForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(voteForm);
+      const optionId = formData.get('optionId');
+      const response = await fetch(`/polls/${pollId}/vote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ optionId })
+      });
+      const data = await response.json();
+      if (data.success) {
+        location.reload();
+      } else {
+        alert('Error: ' + (data.error || 'Could not vote'));
+      }
+    });
+  }
+
+  // Live polling for results every 3 seconds
+  async function fetchResults() {
+    try {
+      const res = await fetch(`/polls/${pollId}/results`);
+      const data = await res.json();
+      let totalVotes = 0;
+      data.results.forEach(opt => totalVotes += opt.count);
+
+      data.results.forEach(opt => {
+        const countEl = document.getElementById(`count-${opt.id}`);
+        const barEl = document.getElementById(`bar-${opt.id}`);
+        if (countEl) countEl.textContent = opt.count;
+        if (barEl) {
+          const percent = totalVotes === 0 ? 0 : (opt.count / totalVotes) * 100;
+          barEl.style.width = percent + '%';
+        }
+      });
+    } catch (err) {
+      console.error('Failed to fetch results', err);
+    }
+  }
+
+  fetchResults();
+  setInterval(fetchResults, 3000);
+</script>
+</main></body></html>
